@@ -6,10 +6,6 @@ obj/
 *.so
 *.d
 
-# DPDK 相關
-dpdk/
-x86_64-native-linuxapp-gcc/
-
 # 測試產物
 *.pcap
 *.log
