@@ -48,21 +48,37 @@ Before using DPDK mode, you need to:
 
 ### Set DPDK Directory
 
-If DPDK is installed in a non-standard location, set the `DPDK_DIR` variable:
+If DPDK is installed in a non-standard location, you can set the following variables in the Makefile:
+
+```makefile
+# DPDK header files directory (default: /usr/include/dpdk)
+DPDK_INCLUDE_DIR ?= /usr/include/dpdk
+
+# DPDK config files directory (default: /usr/include/x86_64-linux-gnu/dpdk)
+DPDK_CONFIG_DIR ?= /usr/include/x86_64-linux-gnu/dpdk
+
+# DPDK library files directory (default: /usr/lib/x86_64-linux-gnu)
+DPDK_LIB_DIR ?= /usr/lib/x86_64-linux-gnu
+```
+
+Or set environment variables:
 
 ```bash
-# In Makefile, change:
-DPDK_DIR ?= /usr/local/dpdk
-
-# Or set environment variable:
-export DPDK_DIR=/path/to/dpdk
+export DPDK_INCLUDE_DIR=/path/to/dpdk/include
+export DPDK_CONFIG_DIR=/path/to/dpdk/config
+export DPDK_LIB_DIR=/path/to/dpdk/lib
 make all
 ```
 
 ### Common DPDK Installation Paths
 
-- `/usr/local/dpdk` (default)
-- `/usr/include/dpdk`
+**Package Manager Installation (Ubuntu/Debian):**
+- Headers: `/usr/include/dpdk`
+- Config: `/usr/include/x86_64-linux-gnu/dpdk`
+- Libraries: `/usr/lib/x86_64-linux-gnu`
+
+**Manual Installation:**
+- `/usr/local/dpdk` (typical default)
 - Custom build directory
 
 ## Usage
