@@ -3,30 +3,39 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
-#include <sys/socket.h>
+#include <poll.h>
 #include <sys/mman.h>
-#include <linux/if_xdp.h>
-#include <linux/if_ether.h>
-#include <net/if.h>
-#include <arpa/inet.h>
+#include <bpf/xsk.h>
+// #include <xdp/xsk.h>
 #include <bpf/bpf.h>
-#include <bpf/libbpf.h>
+#include <linux/if_link.h>
 #include "../../include/common.h"
 #include "../../include/packet_receiver.h"
 
+#define NUM_FRAMES 4096
+#define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
+#define BATCH_SIZE 64
+
+struct xsk_umem_info {
+    struct xsk_ring_prod fq; // Fill Ring
+    struct xsk_ring_cons cq; // Completion Ring
+    struct xsk_umem *umem;
+    void *buffer;
+};
+
+struct xsk_socket_info {
+    struct xsk_ring_cons rx; // RX Ring
+    struct xsk_ring_prod tx; // TX Ring
+    struct xsk_socket *xsk;
+};
+
 // AF_XDP private data structure
 typedef struct {
-    int xsk_fd;
-    int ifindex;
-    // Note: xsk_ring_cons and xsk_ring_prod require libbpf headers
-    // For simplified implementation, we use basic socket operations
-    void *rx_ring;
-    void *fill_ring;
-    void *umem;
-    void *buffer;
-    uint64_t umem_size;
-    uint32_t frame_size;
+    struct xsk_umem_info *umem_info;
+    struct xsk_socket_info *xsk_info;
+    void *bufs;
+
+    uint32_t f_idx; // Fill Ring index
 } af_xdp_private_t;
 
 // Simplified AF_XDP implementation (requires full libbpf support)
@@ -38,78 +47,99 @@ static int af_xdp_init(packet_receiver_t *receiver, const config_t *config) {
         if (!priv) return -1;
         receiver->private_data = priv;
     }
+
+    int ret;
     
-    // Get interface index
-    priv->ifindex = if_nametoindex(config->interface);
-    if (priv->ifindex == 0) {
-        fprintf(stderr, "Error: Interface %s not found\n", config->interface);
-        return -1;
+    // allocate memory
+    posix_memalign(&priv->bufs, getpagesize(), NUM_FRAMES * FRAME_SIZE);
+    if (priv->bufs == MAP_FAILED) {
+        fprintf(stderr, "Error: Failed to allocate bufs\n");
+        exit(1);
+    }
+
+    priv->umem_info = calloc(1, sizeof(*priv->umem_info));
+    if (!priv->umem_info) {
+        fprintf(stderr, "Error: Failed to allocate umem_info\n");
+        exit(1);
+    }
+
+    // create UMEM
+    ret = xsk_umem__create(&priv->umem_info->umem, priv->bufs, NUM_FRAMES * FRAME_SIZE,
+                           &priv->umem_info->fq, &priv->umem_info->cq, NULL);
+    if (ret) {
+        fprintf(stderr, "xsk_umem__create: %s (errno: %d)\n", strerror(-ret), -ret);
+        exit(1);
+    };
+
+    // create AF_XDP Socket (XSK)
+    priv->xsk_info = calloc(1, sizeof(*priv->xsk_info));
+    if (!priv->xsk_info) {
+        fprintf(stderr, "Error: Failed to allocate xsk_info\n");
+        exit(1);
     }
     
-    priv->frame_size = 2048;  // XDP frame size
-    priv->umem_size = priv->frame_size * 4096;  // Pre-allocate 4096 frames
-    
-    // Allocate UMEM buffer
-    priv->buffer = mmap(NULL, priv->umem_size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (priv->buffer == MAP_FAILED) {
-        fprintf(stderr, "Error: Failed to allocate UMEM buffer\n");
-        return -1;
+    struct xsk_socket_config cfg = {
+        .rx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS,
+        .tx_size = XSK_RING_PROD__DEFAULT_NUM_DESCS,
+        .libbpf_flags = 0,
+        .xdp_flags = XDP_ZEROCOPY,
+        .bind_flags = XDP_USE_NEED_WAKEUP,
+    };
+
+    ret = xsk_socket__create(&priv->xsk_info->xsk, config->interface, 0, priv->umem_info->umem,
+                             &priv->xsk_info->rx, &priv->xsk_info->tx, &cfg);
+    if (ret) {
+        fprintf(stderr, "xsk_socket__create: %s (errno: %d)\n", strerror(-ret), -ret);
+        exit(1);
+    };
+
+    // fill memory blocks to Fill Ring
+    ret = xsk_ring_prod__reserve(&priv->umem_info->fq, BATCH_SIZE, &priv->f_idx);
+    for (int i = 0; i < BATCH_SIZE; i++) {
+        *xsk_ring_prod__fill_addr(&priv->umem_info->fq, priv-> f_idx++) = i * FRAME_SIZE;
     }
-    
-    // Create AF_XDP socket
-    priv->xsk_fd = socket(AF_XDP, SOCK_RAW, 0);
-    if (priv->xsk_fd < 0) {
-        fprintf(stderr, "Error: Failed to create AF_XDP socket: %s\n", strerror(errno));
-        munmap(priv->buffer, priv->umem_size);
-        return -1;
-    }
-    
-    // Bind to interface
-    struct sockaddr_xdp sxdp = {0};
-    sxdp.sxdp_family = AF_XDP;
-    sxdp.sxdp_ifindex = priv->ifindex;
-    sxdp.sxdp_queue_id = 0;
-    
-    if (bind(priv->xsk_fd, (struct sockaddr *)&sxdp, sizeof(sxdp)) < 0) {
-        fprintf(stderr, "Error: Failed to bind AF_XDP socket: %s\n", strerror(errno));
-        close(priv->xsk_fd);
-        munmap(priv->buffer, priv->umem_size);
-        return -1;
-    }
-    
-    printf("AF_XDP mode initialized successfully, interface: %s (zero-copy mode)\n", config->interface);
+    xsk_ring_prod__submit(&priv->umem_info->fq, BATCH_SIZE);
     return 0;
 }
 
 static int af_xdp_start(packet_receiver_t *receiver) {
     af_xdp_private_t *priv = (af_xdp_private_t *)receiver->private_data;
     
-    if (!priv || priv->xsk_fd < 0) return -1;
+    if (!priv) return -1;
     
     receiver->running = true;
     printf("Starting packet reception (AF_XDP zero-copy mode)...\n");
     
-    // Simplified receive loop
-    // Note: Full libbpf AF_XDP implementation is needed here
-    // Actual implementation should use xsk_ring_cons and xsk_ring_prod
-    
-    char buffer[2048];
     while (receiver->running) {
-        ssize_t len = recv(priv->xsk_fd, buffer, sizeof(buffer), 0);
-        
-        if (len > 0) {
-            // AF_XDP zero-copy mode: packets are directly in shared memory, no copy needed
+        uint32_t r_idx; // Receive Ring index
+        unsigned int rcvd = xsk_ring_cons__peek(&priv->xsk_info->rx, BATCH_SIZE, &r_idx);
+
+        if (rcvd == 0) continue;
+
+        for (int i = 0; i < rcvd; i++) {
+            const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&priv->xsk_info->rx, r_idx + i);
+            uint64_t addr = desc->addr;
+            uint32_t len = desc->len;
+
+            // receive packet pointer
+            unsigned char *pkt = xsk_umem__get_data(priv->bufs, addr);
             stats_update(&receiver->stats, len);
             stats_update_copy(&receiver->stats, 0);  // Zero copy
-            
+
             if (receiver->config.verbose) {
                 printf("Packet received: %zd bytes (zero-copy)\n", len);
             }
-        } else if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            fprintf(stderr, "Error: Failed to receive packet: %s\n", strerror(errno));
-            break;
         }
+
+        xsk_ring_cons__release(&priv->xsk_info->rx, rcvd);
+
+        // refill memory blocks to Fill Ring
+        xsk_ring_prod__reserve(&priv->umem_info->fq, rcvd, &priv->f_idx);
+        for (int i = 0; i < rcvd; i++) {
+            *xsk_ring_prod__fill_addr(&priv->umem_info->fq, priv->f_idx++) =
+                xsk_ring_cons__rx_desc(&priv->xsk_info->rx, r_idx + i)->addr;
+        }
+        xsk_ring_prod__submit(&priv->umem_info->fq, rcvd);
         
         // Check if runtime duration is reached
         if (receiver->config.duration_sec > 0) {
@@ -134,13 +164,19 @@ static void af_xdp_cleanup(packet_receiver_t *receiver) {
     af_xdp_private_t *priv = (af_xdp_private_t *)receiver->private_data;
     
     if (priv) {
-        if (priv->xsk_fd >= 0) {
-            close(priv->xsk_fd);
-            priv->xsk_fd = -1;
+        if (priv->umem_info) {
+            xsk_umem__delete(priv->umem_info->umem);
+            free(priv->umem_info);
+            priv->umem_info = NULL;
         }
-        if (priv->buffer && priv->buffer != MAP_FAILED) {
-            munmap(priv->buffer, priv->umem_size);
-            priv->buffer = NULL;
+        if (priv->xsk_info) {
+            xsk_socket__delete(priv->xsk_info->xsk);
+            free(priv->xsk_info);
+            priv->xsk_info = NULL;
+        }
+        if (priv->bufs) {
+            free(priv->bufs);
+            priv->bufs = NULL;
         }
         free(priv);
         receiver->private_data = NULL;
