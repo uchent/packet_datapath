@@ -11,6 +11,7 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
+#include <pthread.h>
 #include "../../include/common.h"
 #include "../../include/packet_receiver.h"
 
@@ -87,9 +88,12 @@ static int socket_start(packet_receiver_t *receiver) {
     
     while (receiver->running) {
         ssize_t len = recvfrom(priv->socket_fd, buf, sizeof(buf), 0, NULL, NULL);
-        stats_update(&receiver->stats, len);
-        if (receiver->config.verbose && len > 0) {
-            printf("Raw packet received: %ld bytes\n", len);
+        
+        if (len > 0) {
+            stats_update(&receiver->stats, len);
+            if (receiver->config.verbose) {
+                printf("Raw packet received: %ld bytes\n", len);
+            }
         }
         
         // Check if runtime duration is reached

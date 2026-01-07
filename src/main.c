@@ -3,6 +3,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <pthread.h>
 #include "../include/common.h"
 #include "../include/packet_receiver.h"
 
@@ -20,6 +21,18 @@ static void signal_handler(int sig) {
         printf("\nInterrupt signal received, stopping...\n");
         packet_receiver_stop(g_receiver);
     }
+}
+typedef struct {
+    pthread_t main_tid;
+    int sleep_seconds;
+} thread_args_t;
+
+static void* terminate_thread(void *arg) {
+    thread_args_t *args = (thread_args_t *)arg;
+    sleep(args->sleep_seconds);
+    printf("Terminate thread, duration: %d seconds\n", args->sleep_seconds);
+    pthread_kill(args->main_tid, SIGINT);
+    return NULL;
 }
 
 int main(int argc, char *argv[]) {
@@ -60,6 +73,14 @@ int main(int argc, char *argv[]) {
     
     g_receiver = receiver;
     receiver->config = config;
+
+    // Create terminate thread
+    thread_args_t args;
+    args.main_tid = pthread_self();
+    args.sleep_seconds = config.duration_sec;
+    pthread_t terminate_thread_id;
+    pthread_create(&terminate_thread_id, NULL, terminate_thread, &args);
+    pthread_detach(terminate_thread_id);
     
     // Initialize receiver
     if (receiver->ops.init(receiver, &config) != 0) {
