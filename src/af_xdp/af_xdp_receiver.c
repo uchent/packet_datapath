@@ -20,7 +20,7 @@
 
 #define XDP_PROG_NAME "obj/af_xdp/xdp_kern.o"
 
-#define TEST_QUEUE_INDEX 1
+#define TEST_QUEUE_INDEX 1 // TODO: support multiple socket and queues
 
 struct xsk_umem_info {
     struct xsk_ring_prod fq; // Fill Ring
