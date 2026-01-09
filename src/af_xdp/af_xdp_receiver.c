@@ -171,8 +171,8 @@ static int af_xdp_init(packet_receiver_t *receiver, const config_t *config) {
         fprintf(stderr, "xsk_socket__update_xskmap: %s (errno: %d)\n", strerror(-ret), -ret);
         exit(1);
     }
-    printf("XSK bound to xsks_map\n");
-
+    
+    printf("AF_XDP mode initialized successfully, interface: %s\n", config->interface);
     return 0;
 }
 
