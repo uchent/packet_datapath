@@ -47,15 +47,16 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
         // Note: In production, these should come from command line
         const char *eal_args[] = {
             "packet_receiver",
-            "-l", "0",  // Use core 0
-            "--proc-type", "primary",
+            "-l",
+            "0",  // Use core 0
+            "-n",
+            "4",
             NULL
         };
         
-        int eal_argc = 4;
-        char **eal_argv = (char **)eal_args;
+        int eal_argc = 3;
         
-        ret = rte_eal_init(eal_argc, eal_argv);
+        ret = rte_eal_init(eal_argc, (char **)eal_args);
         if (ret < 0) {
             fprintf(stderr, "Error: DPDK EAL initialization failed: %s\n", 
                     rte_strerror(rte_errno));
@@ -82,6 +83,18 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
     }
 
     printf("Found port ID: %u\n", priv->port_id);
+
+    // Configure port
+    struct rte_eth_conf port_conf = {
+        .rxmode = {
+            .mq_mode = RTE_ETH_MQ_RX_NONE, // Ensure no multi-queue mode
+        },
+    };
+    ret = rte_eth_dev_configure(priv->port_id, 1, 1, &port_conf); // 1 RX queue, 1 TX queue
+    if (ret < 0) {
+        printf("Cannot configure device: err=%d, port=%u\n", ret, priv->port_id);
+        return -1;
+    }
     
     // Create mbuf pool
     char pool_name[32];
@@ -104,21 +117,6 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
     
     printf("Created mbuf pool: %s\n", pool_name);
     
-    // Configure port
-    struct rte_eth_conf port_conf = {
-        .rxmode = {
-            .mtu = RTE_ETHER_MTU,
-        },
-    };
-    
-    ret = rte_eth_dev_configure(priv->port_id, 1, 0, &port_conf);
-    if (ret < 0) {
-        fprintf(stderr, "Error: Failed to configure DPDK port %u: %s\n", 
-                priv->port_id, rte_strerror(rte_errno));
-        rte_mempool_free(priv->mbuf_pool);
-        return -1;
-    }
-    
     // Setup RX queue
     ret = rte_eth_rx_queue_setup(
         priv->port_id,
@@ -135,12 +133,27 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
         rte_mempool_free(priv->mbuf_pool);
         return -1;
     }
+
+    // Setup TX queue
+    ret = rte_eth_tx_queue_setup(
+        priv->port_id,
+        0,
+        RX_RING_SIZE,
+        rte_eth_dev_socket_id(priv->port_id),
+        NULL
+    );
+
+    if (ret < 0) {
+        fprintf(stderr, "Error: Failed to setup TX queue: %s\n", 
+                rte_strerror(rte_errno));
+        rte_mempool_free(priv->mbuf_pool);
+        return -1;
+    }
     
     // Start port
     ret = rte_eth_dev_start(priv->port_id);
     if (ret < 0) {
-        fprintf(stderr, "Error: Failed to start DPDK port %u: %s\n", 
-                priv->port_id, rte_strerror(rte_errno));
+        fprintf(stderr, "rte_eth_dev_start:err=%d, port=%u\n", ret, priv->port_id);
         rte_mempool_free(priv->mbuf_pool);
         return -1;
     }
@@ -151,46 +164,38 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
 }
 
 static int dpdk_start(packet_receiver_t *receiver) {
-    // dpdk_private_t *priv = (dpdk_private_t *)receiver->private_data;
+    dpdk_private_t *priv = (dpdk_private_t *)receiver->private_data;
     
-    // if (!priv) {
-    //     fprintf(stderr, "Error: DPDK receiver not initialized\n");
-    //     return -1;
-    // }
+    if (!priv || priv->port_id == UINT16_MAX) {
+        fprintf(stderr, "Error: DPDK receiver not initialized\n");
+        return -1;
+    }
     
-    // receiver->running = true;
-    // printf("Starting packet reception (DPDK userspace mode)...\n");
-    // printf("Receiving packets on port %u\n", priv->port_id);
+    receiver->running = true;
+    printf("Starting packet reception (DPDK userspace mode)...\n");
+    printf("Receiving packets on port %u\n", priv->port_id);
     
-    // // Main receive loop
-    // while (receiver->running) {
-    //     struct rte_mbuf *bufs[BURST_SIZE];
-    //     uint16_t nb_rx = rte_eth_rx_burst(priv->port_id, 0, bufs, BURST_SIZE);
+    // Main receive loop
+    while (receiver->running) {
+        struct rte_mbuf *bufs[BURST_SIZE];
+        uint16_t nb_rx = rte_eth_rx_burst(priv->port_id, 0, bufs, BURST_SIZE);
         
-    //     if (nb_rx > 0) {
-    //         for (uint16_t i = 0; i < nb_rx; i++) {
-    //             uint32_t pkt_len = rte_pktmbuf_pkt_len(bufs[i]);
+        if (nb_rx > 0) {
+            for (uint16_t i = 0; i < nb_rx; i++) {
+                uint32_t pkt_len = rte_pktmbuf_pkt_len(bufs[i]);
                 
-    //             // Update statistics
-    //             stats_update(&receiver->stats, pkt_len);
+                // Update statistics
+                stats_update(&receiver->stats, pkt_len);
                 
-    //             if (receiver->config.verbose) {
-    //                 printf("Packet received: %u bytes (zero-copy)\n", pkt_len);
-    //             }
+                if (receiver->config.verbose) {
+                    printf("Packet received: %u bytes (zero-copy)\n", pkt_len);
+                }
                 
-    //             // Free mbuf back to pool
-    //             rte_pktmbuf_free(bufs[i]);
-    //         }
-    //     }
-        
-    //     // Check if runtime duration is reached
-    //     if (receiver->config.duration_sec > 0) {
-    //         uint64_t elapsed = get_time_ns() - receiver->stats.start_time;
-    //         if (elapsed / 1e9 >= receiver->config.duration_sec) {
-    //             break;
-    //         }
-    //     }
-    // }
+                // Free mbuf back to pool
+                rte_pktmbuf_free(bufs[i]);
+            }
+        }
+    }
     
     return 0;
 }
@@ -207,11 +212,11 @@ static void dpdk_cleanup(packet_receiver_t *receiver) {
     
     if (priv) {
         // Stop port
-        if (priv->port_id < RTE_MAX_ETHPORTS) {
+        if (priv->port_id != UINT16_MAX) {
             rte_eth_dev_stop(priv->port_id);
             rte_eth_dev_close(priv->port_id);
-            priv->port_id = UINT16_MAX;
             printf("DPDK port %u stopped and closed\n", priv->port_id);
+            priv->port_id = UINT16_MAX;
         }
         
         // Free mbuf pool
