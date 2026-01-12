@@ -54,7 +54,7 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
             NULL
         };
         
-        int eal_argc = 3;
+        int eal_argc = 5;
         
         ret = rte_eal_init(eal_argc, (char **)eal_args);
         if (ret < 0) {
