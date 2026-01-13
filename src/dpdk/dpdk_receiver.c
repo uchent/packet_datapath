@@ -48,7 +48,7 @@ static int dpdk_init(packet_receiver_t *receiver, const config_t *config) {
         const char *eal_args[] = {
             "packet_receiver",
             "-l",
-            "4-5",  // Use core 4-5
+            "5",  // Use core 5
             "-n",
             "4",
             NULL
