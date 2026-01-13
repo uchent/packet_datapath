@@ -1,4 +1,4 @@
-# 編譯產物
+# Build artifacts
 bin/
 obj/
 *.o
@@ -6,23 +6,23 @@ obj/
 *.so
 *.d
 
-# 測試產物
+# Test artifacts
 *.pcap
 *.log
 test_output/
 
-# 編輯器
+# Editor
 .vscode/
 .idea/
 *.swp
 *~
 .DS_Store
 
-# 核心轉儲
+# Core dump
 core
 core.*
 
-# 臨時文件
+# Temporary files
 *.tmp
 *.bak
 
