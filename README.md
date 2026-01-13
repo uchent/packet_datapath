@@ -12,7 +12,7 @@ packet_datapath/
 │   ├── dpdk/            # DPDK reception implementation
 │   └── common/          # Common utilities and statistics module
 ├── include/              # Header files
-├── tests/                # Test related
+├── tests/                # Test results
 ├── scripts/              # Test scripts (pktgen configuration, etc.)
 ├── Makefile              # Build configuration
 └── README.md
@@ -57,24 +57,24 @@ make clean
 
 ### Socket Mode
 ```bash
-sudo ./bin/packet_receiver --mode socket --interface eth0
+sudo ./bin/packet_receiver --mode socket --interface eth0 --duration 30
 ```
 
 ### AF_XDP Mode
 ```bash
-sudo ./bin/packet_receiver --mode af_xdp --interface eth0
+sudo ./bin/packet_receiver --mode af_xdp --interface eth0 --duration 30
 ```
 
 ### DPDK Mode
 ```bash
-sudo ./bin/packet_receiver --mode dpdk --interface eth0
+sudo ./bin/packet_receiver --mode dpdk -a 0000:13:00.0 --duration 30
 ```
 
 ## Performance Testing
 
 Use pktgen for testing:
 ```bash
-./scripts/run_pktgen_test.sh --mode socket --interface eth0
+./scripts/run_pktgen_test.sh
 ```
 
 ## Statistics Output
@@ -83,17 +83,3 @@ The program will output the following statistics:
 - Total packets received
 - Packets per second (PPS)
 - Bits per second (BPS)
-- Average latency
-- Memory copy count
-- CPU usage
-
-## Notes
-
-- All modes require root privileges to run
-- AF_XDP requires Linux 4.18+ kernel
-- DPDK requires binding network card to DPDK driver
-- Recommended to run in a dedicated test environment
-
-## License
-
-MIT License

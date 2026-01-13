@@ -11,7 +11,9 @@ sudo apt-get install -y \
     make \
     libpcap-dev \
     libbpf-dev \
-    pkg-config
+    pkg-config \
+    dpdk-dev \
+    libdpdk-dev
 ```
 
 ### Check Dependencies
@@ -26,17 +28,21 @@ make check-deps
 make all
 ```
 
-### Build Socket Mode Only (Simplest)
+## 3. Setup Huge Pages (DPDK mode)
+
 ```bash
-make socket
+# Check current huge pages
+cat /proc/meminfo | grep Huge
+
+# Set huge pages (example: 1024 pages of 2MB each)
+echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+
+# Mount huge pages
+sudo mkdir -p /mnt/huge
+sudo mount -t hugetlbfs nodev /mnt/huge
 ```
 
-### Build AF_XDP Mode Only
-```bash
-make af_xdp
-```
-
-## 3. Run Tests
+## 4. Run Tests
 
 ### Socket Mode Test
 ```bash
@@ -45,10 +51,6 @@ ip link show
 
 # Run receiver (requires root privileges)
 sudo ./bin/packet_receiver --mode socket --interface eth0 --duration 10
-
-# Send test packets from another terminal
-ping -f <target_IP>
-# Or use other tools to send packets
 ```
 
 ### AF_XDP Mode Test
@@ -60,12 +62,30 @@ uname -r
 sudo ./bin/packet_receiver --mode af_xdp --interface eth0 --duration 10
 ```
 
+### DPDK Mode Test
+```bash
+# Bind Network Interface to DPDK Driver
+
+# List available network interfaces
+dpdk-devbind.py --status
+
+# Bind interface to DPDK driver
+sudo dpdk-devbind.py --bind=uio_pci_generic <PCI_ADDRESS>
+
+# Or use vfio-pci (requires IOMMU support)
+sudo modprobe vfio-pci
+sudo dpdk-devbind.py --bind=vfio-pci <PCI_ADDRESS>
+
+# Run receiver
+sudo ./bin/packet_receiver --mode dpdk --interface 0000:01:00.0
+```
+
 ### View Help
 ```bash
 ./bin/packet_receiver --help
 ```
 
-## 4. Use Pktgen Testing
+## 5. Use Pktgen Testing
 
 ### Prepare Pktgen Environment
 
@@ -86,74 +106,13 @@ sudo modprobe pktgen
 
 ### Run Automated Test Script
 ```bash
-sudo ./scripts/run_pktgen_test.sh \
-    --mode socket \
-    --interface eth0 \
-    --duration 10 \
-    --rate 100%
+# Send test packets from another terminal
+sudo ./scripts/run_pktgen_test.sh
 ```
 
-## 5. View Results
+## 6. View Results
 
 After the program finishes, it will automatically display statistics:
 - Total packets received
 - Packet rate (PPS)
 - Bit rate (Mbps)
-- **Memory copy count** (core metric)
-- Average copies per packet
-
-## 6. Comparison Testing
-
-### Test Script Example
-```bash
-#!/bin/bash
-
-INTERFACE="eth0"
-DURATION=30
-
-echo "Testing Socket mode..."
-sudo ./bin/packet_receiver --mode socket --interface $INTERFACE --duration $DURATION > socket.log 2>&1
-
-echo "Testing AF_XDP mode..."
-sudo ./bin/packet_receiver --mode af_xdp --interface $INTERFACE --duration $DURATION > af_xdp.log 2>&1
-
-echo "Testing completed, viewing results:"
-echo "Socket:"
-tail -20 socket.log
-echo "AF_XDP:"
-tail -20 af_xdp.log
-```
-
-## 7. Common Issues
-
-### Build Errors
-```bash
-# Ensure all dependencies are installed
-make check-deps
-
-# Clean and rebuild
-make clean
-make all
-```
-
-### Runtime Permission Errors
-```bash
-# All modes require root privileges
-sudo ./bin/packet_receiver --mode socket --interface eth0
-```
-
-### Network Interface Not Found
-```bash
-# View available network interfaces
-ip link show
-
-# Use correct interface name
-sudo ./bin/packet_receiver --mode socket --interface <correct_interface_name>
-```
-
-## 8. Next Steps
-
-- Read [ARCHITECTURE.md](ARCHITECTURE.md) to understand the architecture design
-- Read [TIPS.md](TIPS.md) for development suggestions
-- Modify and extend code as needed
-- Perform more detailed performance testing
