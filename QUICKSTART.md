@@ -77,7 +77,7 @@ sudo modprobe vfio-pci
 sudo dpdk-devbind.py --bind=vfio-pci <PCI_ADDRESS>
 
 # Run receiver
-sudo ./bin/packet_receiver --mode dpdk --interface 0000:01:00.0
+sudo ./bin/packet_receiver --mode dpdk -a 0000:01:00.0
 ```
 
 ### View Help
